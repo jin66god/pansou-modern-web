@@ -208,9 +208,22 @@ server {
 
 `.github/workflows/build.yml` 一个工作流干两件事：
 
-1. `verify`：`npm ci --include=dev` + `npm run build` + 校验 `dist/index.html`
-   （**必须先失败先报**，避免坏代码进镜像）
-2. `publish`：buildx 构建 `linux/amd64` + `linux/arm64` 双架构镜像并推到 GHCR
+1. `assets`：`npm ci --include=dev` + `npm run build` + 校验 `dist/index.html`，
+   然后把 `dist` 作为 artifact 上传（先失败先报，坏代码不进镜像）
+2. `publish`：取回 `dist`，用 `Dockerfile.prebuilt` 构建
+   `linux/amd64` + `linux/arm64` 双架构镜像并推到 GHCR
+
+**为什么镜像阶段不跑 node**：`Dockerfile` 是「node 构建 + nginx 运行」两阶段，
+直接拿它做多架构构建时，`linux/arm64` 会在 QEMU 模拟下执行 `npm ci` + `vite build`，
+实测会卡住几十分钟甚至一直不结束。所以 CI 里改成「在 amd64 上编译一次产物，
+再用 `Dockerfile.prebuilt` 打包两种架构」，构建时间降到 2 分钟左右。
+
+两个 Dockerfile 的分工：
+
+| 文件 | 用途 | 是否跑 node |
+| --- | --- | --- |
+| `Dockerfile` | 本地 `docker compose build`、单架构 | 是 |
+| `Dockerfile.prebuilt` | CI 多架构打包，需要已存在的 `dist/` | 否 |
 
 镜像标签：
 
@@ -220,17 +233,20 @@ server {
 | push tag `v1.2.3` | `1.2.3`、`1.2`、`latest`、`sha-<短哈希>` |
 | Pull Request | 只构建不推送，并起容器做 `/healthz` 冒烟测试 |
 
-拉取镜像：
+拉取镜像（该包当前是 **public**，不需要登录）：
 
 ```bash
-# GHCR 包默认私有，第一次要先登录
-echo "$GITHUB_TOKEN" | docker login ghcr.io -u <你的GitHub用户名> --password-stdin
-
 docker pull ghcr.io/jin66god/pansou-modern-web:latest
 ```
 
-如果想让镜像公开可拉：GitHub 仓库 → Packages → 该包 → Package settings →
-Change visibility → Public。
+如果哪天包被改成私有，先登录再拉：
+
+```bash
+echo "$GITHUB_TOKEN" | docker login ghcr.io -u <你的GitHub用户名> --password-stdin
+docker pull ghcr.io/jin66god/pansou-modern-web:latest
+```
+
+改可见性：GitHub 仓库 → Packages → 该包 → Package settings → Change visibility。
 
 **生产环境不要用 `latest`**，改用具体 tag，避免 `docker compose pull` 时被悄悄升级：
 
