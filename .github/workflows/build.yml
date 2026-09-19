@@ -1,9 +1,12 @@
 name: Build and Publish
 
-# 单一工作流：先做前端可构建性校验，再构建并推送多架构镜像到 GHCR。
-# 之前的仓库里同时存在三套 workflow（build.yml / build-docker.yml / publish.yml），
-# 互相覆盖 latest 标签，而且用了已废弃的 actions/upload-artifact@v3 导致必然失败，
-# 现已合并为本文件。
+# 单一工作流：编译前端产物 -> 打包多架构镜像 -> 推 GHCR。
+#
+# 设计要点：
+#   1. 静态资源只在 amd64 上编译一次（assets job），镜像阶段不再跑 node。
+#      否则 linux/arm64 会在 QEMU 模拟下执行 npm ci + vite build，慢到十几分钟。
+#   2. 之前仓库里同时存在三套 workflow 互相覆盖 latest 标签，且用了已废弃的
+#      actions/upload-artifact@v3（GitHub 直接判失败），现已合并为本文件。
 
 on:
   push:
@@ -22,9 +25,9 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # ---------- 1. 前端构建校验（快，先失败先报） ----------
-  verify:
-    name: Verify frontend build
+  # ---------- 1. 编译前端产物 ----------
+  assets:
+    name: Build frontend assets
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -47,17 +50,29 @@ jobs:
       - name: Check build output
         run: |
           test -f dist/index.html
-          echo "--- dist ---"
           ls -lh dist dist/assets
 
-  # ---------- 2. 构建并推送镜像 ----------
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+          retention-days: 7
+
+  # ---------- 2. 打包并推送镜像 ----------
   publish:
     name: Build and push image
-    needs: verify
+    needs: assets
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -92,7 +107,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
+          file: ./Dockerfile.prebuilt
           platforms: linux/amd64,linux/arm64
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
@@ -106,7 +121,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
+          file: ./Dockerfile.prebuilt
           platforms: linux/amd64
           push: false
           load: true

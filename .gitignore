@@ -33,3 +33,5 @@ coverage
 *.sw?
 
 *.tsbuildinfo
+
+# 本地构建产物（CI 里由 assets job 产出后传给镜像构建）
