@@ -1,32 +1,129 @@
-name: Build and Deploy
+name: Build and Publish
+
+# 单一工作流：先做前端可构建性校验，再构建并推送多架构镜像到 GHCR。
+# 之前的仓库里同时存在三套 workflow（build.yml / build-docker.yml / publish.yml），
+# 互相覆盖 latest 标签，而且用了已废弃的 actions/upload-artifact@v3 导致必然失败，
+# 现已合并为本文件。
 
 on:
   push:
-    branches: [ main, master ]
+    branches: [master, main]
+    tags: ['v*']
   pull_request:
-    branches: [ main, master ]
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  build:
+  # ---------- 1. 前端构建校验（快，先失败先报） ----------
+  verify:
+    name: Verify frontend build
     runs-on: ubuntu-latest
-    
     steps:
-    - uses: actions/checkout@v3
-    
-    - name: Setup Node.js
-      uses: actions/setup-node@v3
-      with:
-        node-version: '18'
-        cache: 'npm'
-    
-    - name: Install dependencies
-      run: npm ci
-    
-    - name: Build
-      run: npm run build
-    
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v3
-      with:
-        name: dist
-        path: dist/
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies
+        # devDependencies 里有 tailwindcss / postcss / typescript，必须显式包含
+        run: npm ci --include=dev --no-audit --no-fund
+
+      - name: Build
+        run: npm run build
+
+      - name: Check build output
+        run: |
+          test -f dist/index.html
+          echo "--- dist ---"
+          ls -lh dist dist/assets
+
+  # ---------- 2. 构建并推送镜像 ----------
+  publish:
+    name: Build and push image
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: linux/amd64,linux/arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable={{is_default_branch}}
+            type=sha,prefix=sha-
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # PR 上不推送镜像，但必须保证 Dockerfile 本身能构建成功
+      - name: Build only (PR)
+        if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          platforms: linux/amd64
+          push: false
+          load: true
+          tags: pansou-modern-web:pr
+          cache-from: type=gha
+
+      - name: Smoke test image (PR)
+        if: github.event_name == 'pull_request'
+        run: |
+          docker run -d --name smoke -p 18080:80 \
+            -e PANSOU_BACKEND_URL=http://127.0.0.1:8890 \
+            pansou-modern-web:pr
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18080/healthz; then break; fi
+            sleep 1
+          done
+          curl -fsS http://127.0.0.1:18080/healthz
+          curl -fsS http://127.0.0.1:18080/ | grep -qi '<div id="app"' && echo "SPA served OK"
+          docker logs smoke
+          docker rm -f smoke

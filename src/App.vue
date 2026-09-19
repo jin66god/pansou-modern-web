@@ -39,12 +39,12 @@ const rawSearchResults = reactive<{
   mergedResults: {}
 });
 
-// 筛选状态
+// 筛选状态（空数组 = 不过滤）
 const activeFilters = ref<{
   sources: string[];
   diskTypes: string[];
 }>({
-  sources: ['all'],
+  sources: [],
   diskTypes: []
 });
 
@@ -388,31 +388,52 @@ const updateSearchResults = (response: SearchResponse) => {
   applyFrontendFilters();
 };
 
-// 应用前端筛选（网盘类型）
+// 网盘筛选 + 来源筛选（纯前端，作用于已拿到的搜索结果）
 const applyFrontendFilters = () => {
   const filters = activeFilters.value;
-  
-  // 如果没有选择任何网盘类型，显示全部
-  if (filters.diskTypes.length === 0) {
-    searchResults.mergedResults = { ...rawSearchResults.mergedResults };
+  const raw = rawSearchResults.mergedResults || {};
+  const selectedTypes = filters.diskTypes || [];
+  const selectedSources = filters.sources || [];
+
+  // 没有选中任何条件 = 展示全部
+  if (selectedTypes.length === 0 && selectedSources.length === 0) {
+    searchResults.mergedResults = { ...raw };
     searchResults.total = rawSearchResults.total;
     return;
   }
-  
-  // 根据选中的网盘类型筛选
+
+  // 判断一条合并结果来自 Telegram 频道还是插件
+  const channelSet = new Set(backendHealth.value?.channels || []);
+  const pluginSet = new Set(backendHealth.value?.plugins || []);
+  const classify = (item: any): 'telegram' | 'plugin' | 'unknown' => {
+    const src = String(item?.source || '');
+    if (!src) return 'unknown';
+    if (channelSet.has(src)) return 'telegram';
+    if (pluginSet.has(src)) return 'plugin';
+    return 'unknown';
+  };
+
   const filteredResults: MergedResults = {};
   let totalCount = 0;
-  
-  filters.diskTypes.forEach(diskType => {
-    if (rawSearchResults.mergedResults[diskType]) {
-      filteredResults[diskType] = rawSearchResults.mergedResults[diskType];
-      totalCount += filteredResults[diskType].length;
+
+  Object.keys(raw).forEach((diskType) => {
+    if (selectedTypes.length > 0 && !selectedTypes.includes(diskType)) return;
+
+    const items = Array.isArray(raw[diskType]) ? raw[diskType] : [];
+    const kept = selectedSources.length > 0
+      ? items.filter((item: any) => selectedSources.includes(classify(item)))
+      : items;
+
+    if (kept.length > 0) {
+      filteredResults[diskType] = kept;
+      totalCount += kept.length;
     }
   });
-  
+
   searchResults.mergedResults = filteredResults;
   searchResults.total = totalCount;
 };
+
 
 // 处理筛选变更
 const handleFilterChange = (filters: { sources: string[]; diskTypes: string[] }) => {
@@ -1371,7 +1392,10 @@ onUnmounted(() => {
           <aside class="search-filter-sidebar">
             <SearchFilter
               :mergedResults="rawSearchResults.mergedResults || {}"
+              :channels="backendHealth?.channels || []"
+              :plugins="backendHealth?.plugins || []"
               :hasSearched="hasSearched"
+              :loading="loading"
               @filter-change="handleFilterChange"
             />
           </aside>

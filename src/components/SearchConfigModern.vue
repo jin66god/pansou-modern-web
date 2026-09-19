@@ -64,6 +64,40 @@ const stats = computed(() => ({
   diskTypes: selectedDiskTypes.value.length
 }));
 
+// ---- 列表太长（默认 100+ 频道），加关键字过滤，避免只能靠滚动找 ----
+const channelKeyword = ref('');
+const pluginKeyword = ref('');
+
+const visibleChannels = computed(() => {
+  const kw = channelKeyword.value.trim().toLowerCase();
+  const list = allChannels.value;
+  if (!kw) return list;
+  return list.filter((c) => c.toLowerCase().includes(kw));
+});
+
+const visiblePlugins = computed(() => {
+  const kw = pluginKeyword.value.trim().toLowerCase();
+  const list = availablePlugins.value;
+  if (!kw) return list;
+  return list.filter((p) => p.toLowerCase().includes(kw));
+});
+
+// 只保留「已选中的」列表（用于长列表下快速确认）
+const showOnlySelected = ref(false);
+
+const displayedChannels = computed(() =>
+  showOnlySelected.value
+    ? visibleChannels.value.filter((c) => selectedChannels.value.includes(c))
+    : visibleChannels.value
+);
+
+const displayedPlugins = computed(() =>
+  showOnlySelected.value
+    ? visiblePlugins.value.filter((p) => selectedPlugins.value.includes(p))
+    : visiblePlugins.value
+);
+
+
 const initHealth = () => {
   loading.value = true;
   error.value = null;
@@ -363,6 +397,18 @@ onMounted(() => {
 
       <!-- Tab内容 -->
       <div class="tab-content">
+        <!-- 生效范围说明：后端没有任何写配置接口，这里改的是前端搜索范围 -->
+        <div class="scope-note">
+          <div class="scope-note-title">这里的设置作用于「之后的每一次搜索」</div>
+          <div class="scope-note-body">
+            勾选的频道 / 插件 / 网盘类型会保存到本机浏览器，搜索时作为
+            <code>channels</code> / <code>plugins</code> / <code>cloud_types</code>
+            参数发给后端。后端自身启用哪些插件由部署时的
+            <code>ENABLED_PLUGINS</code> / <code>CHANNELS</code> 决定，
+            需要改服务端就用下面「导出环境变量」复制到后端配置后重启。
+          </div>
+        </div>
+
         <!-- TG频道 -->
         <div v-show="activeTab === 'channels'" class="panel">
           <div class="panel-header">
@@ -392,9 +438,18 @@ onMounted(() => {
               <button @click="showChannelInput = false; newChannelInput = ''" class="btn-cancel">取消</button>
             </div>
 
+            <div class="list-tools">
+              <input v-model="channelKeyword" type="search" class="list-search" placeholder="按名称过滤频道" />
+              <label class="list-toggle">
+                <input type="checkbox" v-model="showOnlySelected" />
+                <span>只看已选</span>
+              </label>
+              <span class="list-count">{{ displayedChannels.length }} / {{ allChannels.length }}</span>
+            </div>
+
             <div class="card-grid">
               <div
-                v-for="channel in allChannels"
+                v-for="channel in displayedChannels"
                 :key="channel"
                 class="card"
                 :class="{ selected: selectedChannels.includes(channel), custom: isCustomChannel(channel) }"
@@ -429,9 +484,18 @@ onMounted(() => {
           </div>
 
           <div class="panel-body">
+            <div class="list-tools">
+              <input v-model="pluginKeyword" type="search" class="list-search" placeholder="按名称过滤插件" />
+              <label class="list-toggle">
+                <input type="checkbox" v-model="showOnlySelected" />
+                <span>只看已选</span>
+              </label>
+              <span class="list-count">{{ displayedPlugins.length }} / {{ availablePlugins.length }}</span>
+            </div>
+
             <div class="card-grid">
               <div
-                v-for="plugin in availablePlugins"
+                v-for="plugin in displayedPlugins"
                 :key="plugin"
                 class="card"
                 :class="{ selected: selectedPlugins.includes(plugin) }"
@@ -1239,5 +1303,78 @@ input:checked + .slider::before {
   .action-bar {
     flex-direction: column;
   }
+}
+/* 生效范围说明 */
+.scope-note {
+  margin: 0 0 1.25rem;
+  padding: 0.85rem 1rem;
+  border-radius: 0.75rem;
+  border: 1px solid hsl(var(--primary) / 0.25);
+  background: hsl(var(--primary) / 0.06);
+}
+
+.scope-note-title {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: hsl(var(--foreground));
+  margin-bottom: 0.3rem;
+}
+
+.scope-note-body {
+  font-size: 0.78rem;
+  line-height: 1.7;
+  color: hsl(var(--muted-foreground));
+}
+
+.scope-note-body code {
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.25rem;
+  border: 1px solid hsl(var(--border));
+  background: hsl(var(--muted));
+  font-size: 0.72rem;
+  color: hsl(var(--foreground));
+}
+
+/* 长列表工具栏 */
+.list-tools {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.list-search {
+  flex: 1 1 12rem;
+  min-width: 8rem;
+  padding: 0.45rem 0.7rem;
+  font-size: 0.8rem;
+  color: hsl(var(--foreground));
+  background: hsl(var(--background));
+  border: 1px solid hsl(var(--border));
+  border-radius: 0.5rem;
+  outline: none;
+}
+
+.list-search:focus { border-color: hsl(var(--primary)); }
+
+.list-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: hsl(var(--muted-foreground));
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.list-toggle input { accent-color: hsl(var(--primary)); cursor: pointer; }
+
+.list-count {
+  font-size: 0.75rem;
+  color: hsl(var(--muted-foreground));
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 </style>
