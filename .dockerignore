@@ -11,7 +11,8 @@ yarn-error.log*
 .yarn
 
 # 构建文件
-dist
+# 注意：dist 不能排除 —— Dockerfile.prebuilt 需要把预编译好的 dist 拷进镜像
+# （CI 里由 assets job 产出后通过 artifact 传下来）
 dist-ssr
 coverage
 *.local

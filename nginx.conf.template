@@ -54,6 +54,20 @@ server {
     # 搜索接口可能持续 20~60 秒，关闭缓冲让浏览器尽早拿到响应
     proxy_buffering       off;
 
+    # ---------- 后端地址的解析时机 ----------
+    # 下面的 proxy_pass 直接写后端地址，这是刻意的选择：
+    # nginx 会在「容器启动时」解析一次该主机名（走 /etc/hosts + /etc/resolv.conf），
+    # 所以 compose 里的 extra_hosts（host.docker.internal -> 宿主网关）
+    # 和同网络容器名都能正常工作。
+    #
+    # 代价：如果这个主机名解析失败，nginx 会直接 emerg 退出、容器起不来，
+    # 日志里会明确写 "host not found in upstream"。排查办法见 README「故障排查」，
+    # 拿不准时把 PANSOU_BACKEND_URL 换成宿主机的 IP。
+    #
+    # 不要改成 "$变量 + resolver 127.0.0.11" 的写法：这样虽然能延迟到请求时解析，
+    # 但在没有 Docker 内置 DNS 的环境（部分嵌套容器 / 自定义 daemon 配置）里
+    # 会导致所有代理请求都失败，反而更难排查。
+
     # ---------- 容器自身存活探针（不依赖后端） ----------
     location = /healthz {
         access_log off;
